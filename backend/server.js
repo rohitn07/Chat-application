@@ -1,35 +1,99 @@
 const express = require("express");
-const chats = require("./data/data");
-// const {chats} = require("./data/data")
+const connectDB = require("./config/db");
 const dotenv = require("dotenv");
+const userRoutes = require("./routes/userRoutes");
+const chatRoutes = require("./routes/chatRoutes");
+const messageRoutes = require("./routes/messageRoutes");
+const { notFound, errorHandler } = require("./middleware/errorMiddleware");
+const path = require("path");
 
-
-const app = express();
 dotenv.config();
+connectDB();
+const app = express();
+
+app.use(express.json()); // to accept json data
+
+// app.get("/", (req, res) => {
+//   res.send("API Running!");
+// });
+
+app.use("/api/user", userRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/message", messageRoutes);
+
+// --------------------------deployment------------------------------
+
+const __dirname1 = path.resolve();
+
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(path.join(__dirname1, "/frontend/build")));
+
+  app.get("*", (req, res) =>
+    res.sendFile(path.resolve(__dirname1, "frontend", "build", "index.html"))
+  );
+} else {
+  app.get("/", (req, res) => {
+    res.send("API is running..");
+  });
+}
+
+// --------------------------deployment------------------------------
+
+// Error Handling middlewares
+app.use(notFound);
+app.use(errorHandler);
+
+const PORT = process.env.PORT;
+
+// assigning  the server to a variable 
+
+const server = app.listen(
+  PORT,
+  console.log(`Server running on PORT ${PORT}...`.yellow.bold)
+);
 
 
-app.get("/", (req,res) => {
-    res.send("<h1> da mapla </h1>");
+
+const io = require("socket.io")(server, {
+
+    // if user doesnt send a message for 60 seconds then it will close the connection to save bandwidth 
+  pingTimeout: 60000, 
+  cors: {
+    origin: "http://localhost:3000",
+    // credentials: true,
+  },
 });
 
-app.get("/api/chat", (req,res) => {
-    res.send(chats);
-});
+// create a connection 
 
-// :id will be replaced by id when searching 
-// ex: http://localhost:3000/api/chat/617a077e18c2d468bc7c4dd4
+io.on("connection", (socket) => {
+  console.log("Connected to socket.io");
+  socket.on("setup", (userData) => {
+    socket.join(userData._id);
+    socket.emit("connected");
+  });
 
-app.get("/api/chat/:id", (req,res) => {
-    
-    // finding the singlechat by comparing ids 
-    const singleChat = chats.find( c=>c._id === req.params.id );
-    res.send( singleChat );
+  socket.on("join chat", (room) => {
+    socket.join(room);
+    console.log("User Joined Room: " + room);
+  });
+  socket.on("typing", (room) => socket.in(room).emit("typing"));
+  socket.on("stop typing", (room) => socket.in(room).emit("stop typing"));
 
-})
+  socket.on("new message", (newMessageRecieved) => {
+    var chat = newMessageRecieved.chat;
 
+    if (!chat.users) return console.log("chat.users not defined");
 
-const PORT = process.env.PORT ;
+    chat.users.forEach((user) => {
+      if (user._id == newMessageRecieved.sender._id) return;
 
-app.listen( PORT , function(){
-    console.log("Server started on port "+PORT);
+      socket.in(user._id).emit("message recieved", newMessageRecieved);
+    });
+  });
+
+  socket.off("setup", () => {
+    console.log("USER DISCONNECTED");
+    socket.leave(userData._id);
+  });
 });
